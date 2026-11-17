@@ -1,0 +1,31 @@
+name: ETL harian (cuaca, trip bulanan, uji kualitas)
+
+on:
+  schedule:
+    - cron: "20 6 * * *"     # 06.20 UTC = 01.20 New York = 13.20 WIB
+  push:
+    branches: [main]
+    paths: ["etl/**", ".github/workflows/etl-daily.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: etl-supabase
+  cancel-in-progress: false
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Uji unit transformasi sebelum menyentuh database
+        run: python -m pytest -q
+      - name: Cuaca -> trip data bulanan (inkremental) -> uji kualitas data
+        run: python -m etl.run_etl daily
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

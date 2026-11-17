@@ -64,7 +64,11 @@ def job_stream(conn):
     if len(baris) == 0:
         return {"status": "dilewati", "extract": len(status), "transform": 0, "load": 0,
                 "pesan": f"snapshot {snap_utc} sudah pernah diproses"}
-    cuaca = _cuaca_untuk(min(slot), max(slot))
+    try:
+        cuaca = _cuaca_untuk(min(slot), max(slot))
+    except Exception as e:  # cuaca gagal tidak boleh menghentikan data streaming; job harian mengisinya nanti
+        print(f"[stream] cuaca belum tersedia: {type(e).__name__}")
+        cuaca = pd.DataFrame(columns=["hour_ts", "suhu_c", "hujan_mm", "angin_kmh"])
     baris = T.tambah_kalender(T.gabung_cuaca(baris, cuaca))
     load.load_dim_live(conn, dim_live)                                    # L
     n = load.load_fact_status(conn, baris)
@@ -89,10 +93,16 @@ def job_trips(conn):
         bersih, dim_baru = T.petakan_stasiun_trip(bersih, dim)
         fakta = T.agregasi_trips(bersih, bulan)
         awal = pd.Timestamp(f"{bulan[:4]}-{bulan[4:]}-01")
-        cuaca = _cuaca_untuk(awal, awal + pd.offsets.MonthEnd(0))
+        akhir = awal + pd.offsets.MonthBegin(1)
+        # cuaca bulan itu biasanya sudah dimuat job cuaca; ambil dari API hanya jika belum lengkap
+        cuaca = load.baca_cuaca(conn, awal.to_pydatetime(), akhir.to_pydatetime())
+        if len(cuaca) < (akhir - awal) / pd.Timedelta(hours=1):
+            cuaca = _cuaca_untuk(awal, akhir - pd.Timedelta(days=1))
+            load.load_weather(conn, cuaca)
+        else:
+            cuaca["hour_ts"] = pd.to_datetime(cuaca["hour_ts"])
         fakta = T.tambah_kalender(T.gabung_cuaca(fakta, cuaca))
         load.load_dim_historical(conn, dim_baru)                          # L
-        load.load_weather(conn, cuaca)
         n = load.load_fact_trips(conn, fakta)
         load.catat_batch(conn, extract.nama_file_trip(bulan), bulan, ringkas, n)
         conn.commit()

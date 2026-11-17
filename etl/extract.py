@@ -5,6 +5,7 @@
 - Open-Meteo (batch harian): cuaca per jam.
 """
 import io
+import time
 import zipfile
 from datetime import date, timedelta
 
@@ -14,10 +15,21 @@ import requests
 from . import config
 
 
-def get_json(url, params=None, timeout=60):
-    r = requests.get(url, params=params, headers=config.HTTP_HEADERS, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+def get_json(url, params=None, timeout=90, percobaan=4):
+    """GET JSON dengan percobaan ulang (jeda 5, 15, 45 detik) untuk galat jaringan sementara."""
+    for i in range(percobaan):
+        try:
+            r = requests.get(url, params=params, headers=config.HTTP_HEADERS, timeout=timeout)
+            if r.status_code in (429, 500, 502, 503, 504):
+                raise requests.HTTPError(f"HTTP {r.status_code}", response=r)
+            r.raise_for_status()
+            return r.json()
+        except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as e:
+            sementara = not isinstance(e, requests.HTTPError) or (
+                e.response is not None and e.response.status_code in (429, 500, 502, 503, 504))
+            if not sementara or i == percobaan - 1:
+                raise
+            time.sleep(5 * 3 ** i)
 
 
 # ---------------------------------------------------------------- GBFS (streaming)

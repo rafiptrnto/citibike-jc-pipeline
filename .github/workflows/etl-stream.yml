@@ -2,7 +2,7 @@ name: ETL streaming (GBFS tiap 10 menit)
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # GitHub bisa terlambat beberapa menit pada jam sibuk
+    - cron: "4,14,24,34,44,54 * * * *"   # tiap 10 menit, digeser dari menit ke-0 yang padat
   workflow_dispatch:
 
 concurrency:

@@ -21,6 +21,7 @@ Open-Meteo (cuaca)     ┘                                                      
 | `etl/load.py` | Upsert ke Supabase, log, penanda file yang sudah dimuat |
 | `etl/quality.py` | Uji kualitas data setelah load |
 | `etl/run_etl.py` | Integrasi E → T → L per job + pencatatan log |
+| `etl/loop.py` | Loop tiap 10 menit di runner GitHub Actions |
 | `tests/test_transform.py` | Uji unit setiap aturan transformasi |
 | `sql/001_etl_schema.sql` | Skema tabel target |
 | `notebooks/backfill_streaming_colab.ipynb` | Memuat snapshot lama dari Drive (sekali jalan) |
@@ -41,9 +42,12 @@ Open-Meteo (cuaca)     ┘                                                      
 
 | Workflow | Jadwal | Isi |
 |---|---|---|
-| `etl-stream.yml` | Tiap 10 menit | GBFS → transform → upsert slot 30 menit berjalan |
-| `etl-daily.yml` | Harian 06.20 UTC | Uji unit, cuaca 10 hari terakhir, file trip bulan baru (inkremental), uji kualitas |
+| `etl-loop.yml` (utama) | Memicu dirinya sendiri tiap ±5,7 jam; cron 6 jam sebagai cadangan | Stream tiap 10 menit + job harian sekali sehari setelah 06.00 UTC (`etl/loop.py`) |
+| `etl-daily.yml` | Setiap kode ETL berubah; cron harian cadangan | Uji unit, cuaca 10 hari terakhir, file trip bulan baru (inkremental), uji kualitas |
+| `etl-stream.yml` | Manual | Satu snapshot GBFS (uji/demo) |
 | `tests.yml` | Setiap push | Uji unit |
+
+Cron GitHub `*/10` tidak berjalan di repo ini, jadi jeda 10 menit diatur di dalam runner dan run berikutnya dipicu lewat `workflow_dispatch` (diizinkan untuk `GITHUB_TOKEN`).
 
 Semua job aman dijalankan ulang (upsert + snapshot yang sudah diproses dilewati). Setiap job tercatat di tabel `etl_log_run`; uji kualitas di `etl_quality_check`. Jika job gagal, GitHub mengirim email.
 

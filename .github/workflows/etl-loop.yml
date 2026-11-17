@@ -1,0 +1,43 @@
+name: ETL otomatis (loop tiap 10 menit)
+
+# Satu run = loop ~5,7 jam: job streaming tiap 10 menit + job harian sekali sehari.
+# Di akhir, run ini memicu run berikutnya (workflow_dispatch boleh dipicu GITHUB_TOKEN),
+# sehingga pipeline terus berjalan tanpa bergantung pada cron GitHub yang sering terlambat.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 */6 * * *"   # cadangan: menyalakan ulang rantai jika sempat terputus
+
+concurrency:
+  group: etl-loop
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Uji unit sebelum menyentuh database
+        run: python -m pytest -q
+      - name: Loop ETL (stream tiap 10 menit, harian sekali sehari)
+        id: loop
+        run: python -m etl.loop --menit 340
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - name: Picu run berikutnya
+        # tidak dipicu jika uji unit gagal (loop dilewati): rantai berhenti dan GitHub mengirim email
+        if: always() && steps.loop.outcome != 'skipped' && github.ref == 'refs/heads/main'
+        run: gh workflow run etl-loop.yml --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}

@@ -2,14 +2,14 @@ name: ETL harian (cuaca, trip bulanan, uji kualitas)
 
 on:
   schedule:
-    - cron: "20 6 * * *"     # 06.20 UTC = 01.20 New York = 13.20 WIB
+    - cron: "20 6 * * *"     # cadangan; job harian biasanya dijalankan oleh etl-loop.yml
   push:
     branches: [main]
     paths: ["etl/**", ".github/workflows/etl-daily.yml"]
   workflow_dispatch:
 
 concurrency:
-  group: etl-supabase
+  group: etl-daily
   cancel-in-progress: false
 
 jobs:

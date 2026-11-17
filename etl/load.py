@@ -55,11 +55,13 @@ def query_df(conn, sql, params=None):
         return pd.DataFrame(cur.fetchall(), columns=cols)
 
 
-def upsert(conn, table, df, kunci, kolom_update, page_size=5000):
-    """Upsert df ke table. Hanya kolom_update yang diperbarui jika kunci sudah ada."""
+def upsert(conn, table, df, kunci, kolom_update, page_size=5000, kolom_insert=None):
+    """Upsert df ke table. Hanya kolom_update yang diperbarui jika kunci sudah ada;
+    kolom_insert (default = kolom_update) yang diisi saat baris baru dibuat."""
     if df is None or len(df) == 0:
         return 0
-    cols = list(kunci) + [c for c in kolom_update if c not in kunci]
+    isi = kolom_insert if kolom_insert is not None else kolom_update
+    cols = list(kunci) + [c for c in isi if c not in kunci]
     set_ = ", ".join(f"{c} = excluded.{c}" for c in kolom_update) + ", loaded_at = now()" \
         if table in ("fact_station_30min", "weather_hourly") else \
         ", ".join(f"{c} = excluded.{c}" for c in kolom_update)
@@ -84,7 +86,7 @@ def load_dim_live(conn, dim):
 
 def load_dim_historical(conn, dim_baru):
     """Stasiun yang hanya ada di trip data: ditambahkan jika belum ada."""
-    return upsert(conn, "dim_station", dim_baru, ["station_id"], [])
+    return upsert(conn, "dim_station", dim_baru, ["station_id"], [], kolom_insert=KOLOM_DIM[1:])
 
 
 def baca_dim(conn):

@@ -261,13 +261,14 @@ def petakan_stasiun_trip(trips, dim):
         x = t[t[f"{sisi}_sid"].notna() & ~t[f"{sisi}_sid"].isin(ids)]
         if len(x):
             baru.append(pd.DataFrame({"station_id": x[f"{sisi}_sid"].astype(str),
-                                      "station_name": x[f"{sisi}_station_name"].astype(str),
+                                      "station_name": x[f"{sisi}_station_name"].astype("string").str.strip(),
                                       "lat": x[lat], "lng": x[lng]}))
     if baru:
         b = pd.concat(baru, ignore_index=True)
         dim_baru = (b.groupby("station_id")
                       .agg(station_name=("station_name", "first"), lat=("lat", "median"), lng=("lng", "median"))
                       .reset_index())
+        dim_baru["station_name"] = dim_baru["station_name"].fillna(dim_baru["station_id"])
         dim_baru["wilayah"] = wilayah_dari_id(dim_baru["station_id"])
         dim_baru["live_station_id"] = None
         dim_baru["capacity"] = None

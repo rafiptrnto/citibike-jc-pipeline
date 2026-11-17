@@ -34,7 +34,13 @@ KOLOM_DIM = ["station_id", "live_station_id", "station_name", "wilayah", "capaci
 def connect():
     if not config.DATABASE_URL:
         raise RuntimeError("DATABASE_URL belum diisi (GitHub Secret / variabel lingkungan).")
-    return psycopg2.connect(config.DATABASE_URL, connect_timeout=30)
+    try:
+        return psycopg2.connect(config.DATABASE_URL, connect_timeout=30)
+    except Exception as e:
+        # Pesan asli psycopg2 bisa memuat potongan connection string (termasuk password),
+        # jadi tidak pernah dicetak ke log publik GitHub Actions.
+        jenis = "format DATABASE_URL tidak valid" if "dsn" in str(e).lower() else "koneksi/autentikasi ditolak"
+        raise RuntimeError(f"Gagal terhubung ke Supabase ({jenis}). Periksa secret DATABASE_URL.") from None
 
 
 def _rows(df, cols):

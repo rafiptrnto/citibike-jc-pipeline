@@ -1,0 +1,30 @@
+name: ELT batch (manual / saat kode ELT berubah)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bulan:
+        description: "Bulan trip data (YYYYMM)"
+        default: "202610"
+  push:
+    paths: ["elt/**", ".github/workflows/elt-run.yml"]
+
+concurrency:
+  group: elt-run
+  cancel-in-progress: false
+
+jobs:
+  elt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Extract -> Load raw -> Transform (SQL di Supabase)
+        run: python -m elt.run_elt batch "${{ github.event.inputs.bulan || '202610' }}"
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

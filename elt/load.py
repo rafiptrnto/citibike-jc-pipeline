@@ -69,16 +69,28 @@ def load_trips_raw(conn, df, bulan, source_file):
 
 
 def load_gbfs_raw(conn, info_records, status_records, snapshot_time, feeds):
-    """Muat satu snapshot GBFS: setiap stasiun disimpan sebagai objek JSON aslinya (jsonb)."""
-    b_info = buat_batch(conn, "gbfs_station_information", feeds.get("station_information"), None, len(info_records))
-    _copy(conn, "gbfs_station_information", ["batch_id", "row_no", "payload"],
-          ((b_info, i + 1, json.dumps(s, ensure_ascii=False)) for i, s in enumerate(info_records)))
-    n_info = _selesai(conn, b_info, "gbfs_station_information")
+    """Muat satu snapshot GBFS: setiap stasiun disimpan sebagai objek JSON aslinya (jsonb).
+    info_records=None melewati station_information (data stasiun jarang berubah)."""
+    b_info = n_info = None
+    if info_records is not None:
+        b_info = buat_batch(conn, "gbfs_station_information", feeds.get("station_information"), None, len(info_records))
+        _copy(conn, "gbfs_station_information", ["batch_id", "row_no", "payload"],
+              ((b_info, i + 1, json.dumps(s, ensure_ascii=False)) for i, s in enumerate(info_records)))
+        n_info = _selesai(conn, b_info, "gbfs_station_information")
     b_st = buat_batch(conn, "gbfs_station_status", feeds.get("station_status"), None, len(status_records))
     _copy(conn, "gbfs_station_status", ["batch_id", "row_no", "snapshot_time", "payload"],
           ((b_st, i + 1, snapshot_time, json.dumps(s, ensure_ascii=False)) for i, s in enumerate(status_records)))
     n_st = _selesai(conn, b_st, "gbfs_station_status")
     return (b_info, n_info), (b_st, n_st)
+
+
+def info_sudah_dimuat(conn, jam=24):
+    """True jika station_information lengkap sudah dimuat dalam `jam` jam terakhir."""
+    with conn.cursor() as cur:
+        cur.execute("""select exists (select 1 from raw_elt.load_batch
+                       where sumber = 'gbfs_station_information' and baris_load = baris_extract
+                         and loaded_at > now() - make_interval(hours => %s))""", (jam,))
+        return cur.fetchone()[0]
 
 
 def load_weather_raw(conn, df, sumber_url):

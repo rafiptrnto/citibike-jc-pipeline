@@ -163,7 +163,7 @@ where s.payload->>'is_installed' in ('1', 'true')
 on conflict (station_id, snapshot_terakhir) do nothing
 """.replace("ORIGIN", ORIGIN)
 
-SQL_FACT_STATUS = """
+SQL_FACT_STATUS_TPL = """
 with agg as (
   select station_id, waktu,
     (array_agg(num_bikes_available order by snapshot_dt))[1] as sepeda_awal,
@@ -174,9 +174,9 @@ with agg as (
     (array_agg(num_docks_disabled order by snapshot_dt desc))[1] as dok_rusak,
     avg(num_bikes_available) as sepeda_rata2, avg(num_docks_available) as dok_rata2,
     count(distinct snapshot_dt) as n, max(snapshot_terakhir) as terakhir
-  from elt.gbfs_status_clean group by station_id, waktu),
+  from elt.gbfs_status_clean {BATAS_AGG} group by station_id, waktu),
 f as (select a.*, p.sepeda_tersedia as prev from agg a
-      left join agg p on p.station_id = a.station_id and p.waktu = a.waktu - interval '30 minutes')
+      left join agg p on p.station_id = a.station_id and p.waktu = a.waktu - interval '30 minutes' {BATAS_F})
 insert into elt.fact_station_30min (station_id, waktu, tanggal, jam, hari, akhir_pekan, suhu_c, hujan_mm,
     angin_kmh, sepeda_awal, sepeda_tersedia, ebike_tersedia, dok_tersedia, sepeda_rusak, dok_rusak,
     sepeda_rata2, dok_rata2, net_flow_status, kosong, penuh, n_snapshot, snapshot_terakhir)
@@ -186,7 +186,7 @@ select f.station_id, f.waktu, f.waktu::date, extract(hour from f.waktu)::int,
        f.dok_tersedia, f.sepeda_rusak, f.dok_rusak, f.sepeda_rata2, f.dok_rata2,
        coalesce(f.sepeda_tersedia - f.prev, f.sepeda_tersedia - f.sepeda_awal),
        f.sepeda_tersedia = 0, f.dok_tersedia = 0, f.n, f.terakhir
-from f left join elt.weather_hourly wh on wh.hour_ts = date_trunc('hour', f.waktu)
+from f left join elt.weather_hourly wh on wh.hour_ts = date_trunc('hour', f.waktu) {BATAS_AKHIR}
 on conflict (station_id, waktu) do update set tanggal = excluded.tanggal, jam = excluded.jam,
   hari = excluded.hari, akhir_pekan = excluded.akhir_pekan,
   suhu_c = coalesce(excluded.suhu_c, elt.fact_station_30min.suhu_c),
@@ -199,6 +199,13 @@ on conflict (station_id, waktu) do update set tanggal = excluded.tanggal, jam = 
   net_flow_status = excluded.net_flow_status, kosong = excluded.kosong, penuh = excluded.penuh,
   n_snapshot = excluded.n_snapshot, snapshot_terakhir = excluded.snapshot_terakhir, loaded_at = now()
 """
+# Seluruh riwayat (jalur batch) atau hanya slot terbaru (jalur streaming, agar biaya tetap kecil).
+SQL_FACT_STATUS = (SQL_FACT_STATUS_TPL.replace("{BATAS_AGG}", "").replace("{BATAS_F}", "")
+                   .replace("{BATAS_AKHIR}", ""))
+SQL_FACT_STATUS_TERBARU = (SQL_FACT_STATUS_TPL
+    .replace("{BATAS_AGG}", "where waktu >= (now() at time zone 'America/New_York') - make_interval(hours => %(jam)s + 1)")
+    .replace("{BATAS_F}", "")
+    .replace("{BATAS_AKHIR}", "where f.waktu >= (now() at time zone 'America/New_York') - make_interval(hours => %(jam)s)"))
 
 
 # ================================================================ runner
@@ -254,8 +261,18 @@ def transform_trips(conn, bulan, batch_id, say=print):
     return ringkas
 
 
-def transform_gbfs(conn, say=print):
-    """Transformasi snapshot GBFS mentah: silver (bersih) lalu agregasi slot ke fact."""
+def transform_cuaca(conn):
+    """Cuaca mentah -> elt.weather_hourly (SQL di database)."""
+    with conn.cursor() as cur:
+        cur.execute(SQL_CUACA)
+        n = cur.rowcount
+        _log(cur, None, "R7 cuaca per jam (arsip diutamakan)", None, n)
+    return n
+
+
+def transform_gbfs(conn, say=print, jam_terakhir=None):
+    """Transformasi snapshot GBFS mentah: silver (bersih) lalu agregasi slot ke fact.
+    jam_terakhir: bila diisi, hanya slot dalam N jam terakhir yang dihitung ulang (jalur streaming)."""
     ringkas = {}
     with conn.cursor() as cur:
         cur.execute(SQL_DIM_LIVE)
@@ -263,6 +280,10 @@ def transform_gbfs(conn, say=print):
         n_raw = cur.fetchone()[0]
         cur.execute(SQL_GBFS_CLEAN); ringkas["status_clean_baru"] = cur.rowcount
         _log(cur, None, "R1/R2/R4 status GBFS -> silver", n_raw, cur.rowcount)
-        cur.execute(SQL_FACT_STATUS); ringkas["fact_status"] = cur.rowcount
+        if jam_terakhir:
+            cur.execute(SQL_FACT_STATUS_TERBARU, {"jam": int(jam_terakhir)})
+        else:
+            cur.execute(SQL_FACT_STATUS)
+        ringkas["fact_status"] = cur.rowcount
         _log(cur, None, "R6 agregasi slot 30 menit -> fact", None, cur.rowcount)
     return ringkas

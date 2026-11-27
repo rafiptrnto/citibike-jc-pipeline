@@ -1,7 +1,8 @@
 """Integrasi pipeline ELT: Extract -> Load (raw) -> Transform (SQL di database) dalam satu perintah.
 
     python -m elt.run_elt batch 202610        # trip bulan itu + cuaca + satu snapshot GBFS
-    python -m elt.run_elt stream [KEEP_DAYS]  # satu snapshot GBFS (+ retensi raw opsional)
+    python -m elt.run_elt stream [KEEP_DAYS]  # satu snapshot GBFS stasiun JC/HB (retensi raw 7 hari)
+    python -m elt.run_elt harian              # cuaca terbaru + bulan trip baru bila file sudah terbit
 
 Urutan dijaga: Transform hanya berjalan jika raw sudah tersimpan lengkap dan jumlahnya cocok
 dengan hasil ekstraksi. Raw tidak diubah oleh Transform. Setiap eksekusi dicatat di elt.run_log.
@@ -97,20 +98,27 @@ def elt_batch(conn, bulan, say=_say):
         raise
 
 
-def elt_stream(conn, keep_days=None, say=_say):
+AWALAN_STREAM = ("JC", "HB")      # ruang lingkup studi kasus: stasiun Jersey City dan Hoboken
+KEEP_DAYS_STREAM = 7              # retensi raw status GBFS (kuota gratis Supabase 500 MB)
+JAM_FACT_STREAM = 6               # hanya slot 6 jam terakhir yang dihitung ulang tiap snapshot
+
+
+def elt_stream(conn, keep_days=KEEP_DAYS_STREAM, say=_say):
+    """ELT satu snapshot GBFS: Extract (stasiun JC/HB) -> Load raw -> Transform SQL (slot terbaru)."""
     mulai = datetime.now(timezone.utc)
     try:
         say("Proses Extract dimulai (GBFS)")
-        info, status, snap, feeds = extract.extract_gbfs_raw()
-        say(f"Data berhasil diekstraksi: {len(info):,} stasiun, {len(status):,} status")
+        info, status, snap, feeds = extract.extract_gbfs_raw(AWALAN_STREAM)
+        say(f"Data berhasil diekstraksi: {len(info):,} stasiun JC/HB, {len(status):,} status (tanpa cleaning)")
         say("Proses Load dimulai")
-        (b_i, n_i), (b_s, n_s) = load.load_gbfs_raw(conn, info, status, snap, feeds)
-        if (n_i, n_s) != (len(info), len(status)):
+        muat_info = not load.info_sudah_dimuat(conn)          # data stasiun cukup dimuat sekali sehari
+        (b_i, n_i), (b_s, n_s) = load.load_gbfs_raw(conn, info if muat_info else None, status, snap, feeds)
+        if (muat_info and n_i != len(info)) or n_s != len(status):
             raise RuntimeError("Jumlah raw GBFS tidak cocok dengan hasil ekstraksi")
         conn.commit()
-        say(f"Raw data berhasil dimuat ke storage: {n_i:,} + {n_s:,} baris")
+        say(f"Raw data berhasil dimuat ke storage: status {n_s:,}" + (f", information {n_i:,}" if muat_info else ""))
         say("Proses Transform dimulai")
-        h = transform.transform_gbfs(conn, say)
+        h = transform.transform_gbfs(conn, say, jam_terakhir=JAM_FACT_STREAM)
         if keep_days:
             say(f"Retensi: {load.purge_gbfs_raw(conn, keep_days):,} baris raw status lama dihapus")
         conn.commit()
@@ -126,6 +134,49 @@ def elt_stream(conn, keep_days=None, say=_say):
         raise
 
 
+def elt_cuaca(conn, hari_ke_belakang=7, say=_say):
+    """ELT cuaca harian: Extract (arsip + prakiraan) -> Load raw -> Transform SQL ke elt.weather_hourly."""
+    from datetime import date, timedelta
+    mulai = datetime.now(timezone.utc)
+    try:
+        hari = date.today()
+        df = extract.extract_weather_raw(hari - timedelta(days=hari_ke_belakang), hari + timedelta(days=1))
+        b, n = load.load_weather_raw(conn, df, config.ARCHIVE_URL)
+        if n != len(df):
+            raise RuntimeError("Jumlah raw cuaca tidak cocok dengan hasil ekstraksi")
+        conn.commit()
+        t = transform.transform_cuaca(conn)
+        conn.commit()
+        say(f"Cuaca: {len(df):,} baris dimuat ke raw, {t:,} jam diperbarui di elt.weather_hourly")
+        _catat(conn, "elt_cuaca", mulai, "sukses", len(df), n, t)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        _catat(conn, "elt_cuaca", mulai, "gagal", pesan=f"{type(e).__name__}: {e}"[:4000])
+        conn.commit()
+        raise
+
+
+def elt_trip_bulan_baru(conn, say=_say):
+    """Jalankan ELT batch untuk bulan sebelumnya dan bulan berjalan bila file barunya sudah terbit dan belum termuat."""
+    hari = datetime.now(timezone.utc).date()
+    bulan_ini = hari.replace(day=1)
+    sebelumnya = (bulan_ini - pd.Timedelta(days=1)).replace(day=1)
+    for d in (sebelumnya, bulan_ini):
+        bulan = f"{d:%Y%m}"
+        with conn.cursor() as cur:
+            cur.execute("select exists (select 1 from raw_elt.load_batch where sumber = 'trips' and bulan = %s "
+                        "and baris_load = baris_extract)", (bulan,))
+            ada = cur.fetchone()[0]
+        if ada:
+            continue
+        try:
+            hasil = elt_batch(conn, bulan, say)
+            say(f"Bulan {bulan}: {hasil.get('status', 'diproses')}")
+        except Exception as e:
+            say(f"Bulan {bulan} gagal (tercatat di elt.run_log): {type(e).__name__}")
+
+
 if __name__ == "__main__":
     perintah = sys.argv[1] if len(sys.argv) > 1 else "batch"
     conn = load.connect()
@@ -133,7 +184,10 @@ if __name__ == "__main__":
         if perintah == "batch":
             elt_batch(conn, sys.argv[2] if len(sys.argv) > 2 else "202610")
         elif perintah == "stream":
-            elt_stream(conn, int(sys.argv[2]) if len(sys.argv) > 2 else None)
+            elt_stream(conn, int(sys.argv[2]) if len(sys.argv) > 2 else KEEP_DAYS_STREAM)
+        elif perintah == "harian":
+            elt_cuaca(conn)
+            elt_trip_bulan_baru(conn)
         else:
             sys.exit(f"Perintah tidak dikenal: {perintah}")
     finally:

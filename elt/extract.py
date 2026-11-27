@@ -35,14 +35,23 @@ def extract_trips_raw(bulan):
     return df, f"{config.S3_BASE}/{zip_name}"
 
 
-def extract_gbfs_raw():
-    """Satu snapshot GBFS: daftar objek stasiun asli (dict) + waktu update feed (epoch, teks)."""
+def extract_gbfs_raw(awalan=None):
+    """Satu snapshot GBFS: daftar objek stasiun asli (dict) + waktu update feed (epoch, teks).
+
+    awalan: tuple awalan short_name (mis. ("JC", "HB")). Bila diberikan, hanya stasiun dengan
+    short_name tersebut yang dibawa (pembatasan ruang lingkup studi kasus, bukan pembersihan;
+    objek stasiun tetap utuh). Dipakai oleh jalur streaming agar raw tidak membengkak
+    (2.519 stasiun x 144 snapshot/hari melampaui kuota 500 MB)."""
     discovery = get_json(config.GBFS_DISCOVERY)
     feeds = {f["name"]: f["url"] for f in discovery["data"]["en"]["feeds"]}
     info_js = get_json(feeds["station_information"])
     status_js = get_json(feeds["station_status"])
-    return (info_js["data"]["stations"], status_js["data"]["stations"],
-            str(int(status_js["last_updated"])), feeds)
+    info, status = info_js["data"]["stations"], status_js["data"]["stations"]
+    if awalan:
+        info = [s for s in info if str(s.get("short_name") or "").strip().upper().startswith(tuple(awalan))]
+        ids = {s["station_id"] for s in info}
+        status = [s for s in status if s.get("station_id") in ids]
+    return info, status, str(int(status_js["last_updated"])), feeds
 
 
 def _hourly_raw(js, sumber):
